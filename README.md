@@ -53,7 +53,7 @@ Copy the entire `qmi8658c` folder to your project's `components` directory.
 
 ## Usage Examples
 
-### 1. Global Instance (Arduino-style)
+### 1. Global Instance 
 
 ```c
 #include "qmi8658c.h"
