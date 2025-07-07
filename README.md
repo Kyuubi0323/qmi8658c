@@ -255,36 +255,14 @@ esp_err_t (*self_test)(qmi8658c_t* self, bool* acc_test_pass, bool* gyro_test_pa
 - `QMI8658C_ODR_62_5HZ`: 62.5 Hz
 - `QMI8658C_ODR_31_25HZ`: 31.25 Hz
 
-## Error Handling
-
-All functions return `esp_err_t` values:
-- `ESP_OK`: Success
-- `ESP_ERR_INVALID_ARG`: Invalid argument
-- `ESP_ERR_INVALID_STATE`: Component not initialized
-- `ESP_ERR_NOT_FOUND`: Sensor not found or invalid chip ID
-- Other I2C-related errors
 
 
-## Compatibility
 
-- **ESP-IDF Version**: 4.4.0 and later
-- **Supported Chips**: ESP32, ESP32-S2, ESP32-S3, ESP32-C3, ESP32-C2, ESP32-C6, ESP32-H2
-- **QMI8658C Sensor**: All variants
 
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Contributing
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
 
-## Acknowledgments
 
-- Based on the design pattern of the slog component
-- QMI8658C datasheet and reference implementations
-- ESP-IDF framework and documentation
