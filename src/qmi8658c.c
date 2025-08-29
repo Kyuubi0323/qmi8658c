@@ -165,7 +165,7 @@ static esp_err_t qmi8658c_obj_init(qmi8658c_t* self, const qmi8658c_config_t* co
         return ret;
     }
     
-    self->initialized = true;
+   
     ESP_LOGI(TAG, "QMI8658C initialized successfully");
     
     return ESP_OK;
