@@ -14,6 +14,14 @@ static uint16_t global_gyro_sensitivity = QMI8658C_GYRO_SCALE_SENSITIVITY_16DPS;
 static bool global_initialized = false;
 static qmi8658c_scaled_data_t gyro_offset = {0.0f, 0.0f, 0.0f};
 
+static esp_err_t qmi8658c_obj_set_mode(qmi8658c_t* self, qmi8658c_mode_t mode);
+static esp_err_t qmi8658c_obj_set_acc_odr(qmi8658c_t* self, qmi8658c_acc_odr_t odr);
+static esp_err_t qmi8658c_obj_set_acc_range(qmi8658c_t* self, qmi8658c_acc_range_t range);
+static esp_err_t qmi8658c_obj_set_gyro_odr(qmi8658c_t* self, qmi8658c_gyro_odr_t odr);
+static esp_err_t qmi8658c_obj_set_gyro_range(qmi8658c_t* self, qmi8658c_gyro_range_t range);
+static esp_err_t qmi8658c_obj_enable_acc(qmi8658c_t* self, bool enable);
+static esp_err_t qmi8658c_obj_enable_gyro(qmi8658c_t* self, bool enable);
+
 // Sensitivity lookup tables (from Arduino library)
 static const uint16_t acc_scale_sensitivity_table[4] = {
     QMI8658C_ACC_SCALE_SENSITIVITY_2G,   // ±2g
