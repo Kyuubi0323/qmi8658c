@@ -129,6 +129,8 @@ static esp_err_t qmi8658c_obj_init(qmi8658c_t* self, const qmi8658c_config_t* co
         ESP_LOGE(TAG, "Invalid chip ID: 0x%02X, expected 0x%02X", who_am_i, QMI8658C_CHIP_ID);
         return ESP_ERR_NOT_FOUND;
     }
+     // Set initialized flag before calling other functions that check it
+    self->initialized = true;
     
     // Set operating mode
     ret = qmi8658c_obj_set_mode(self, config->mode);

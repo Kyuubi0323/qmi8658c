@@ -96,17 +96,13 @@ typedef enum {
     QMI8658C_GYRO_RANGE_256DPS,     ///< ±256 degrees per second
     QMI8658C_GYRO_RANGE_512DPS,     ///< ±512 degrees per second
     QMI8658C_GYRO_RANGE_1024DPS,    ///< ±1024 degrees per second
-    QMI8658C_GYRO_RANGE_2048DPS     ///< ±2048 degrees per second
 } qmi8658c_gyro_range_t;
 
 /**
  * @brief Output Data Rate (ODR) options for accelerometer
  */
 typedef enum {
-    QMI8658C_ACC_ODR_8000HZ = 0,    ///< 8000 Hz
-    QMI8658C_ACC_ODR_4000HZ,        ///< 4000 Hz
-    QMI8658C_ACC_ODR_2000HZ,        ///< 2000 Hz
-    QMI8658C_ACC_ODR_1000HZ,        ///< 1000 Hz
+    QMI8658C_ACC_ODR_1000HZ = 3,       ///< 1000 Hz
     QMI8658C_ACC_ODR_500HZ,         ///< 500 Hz
     QMI8658C_ACC_ODR_250HZ,         ///< 250 Hz
     QMI8658C_ACC_ODR_125HZ,         ///< 125 Hz
