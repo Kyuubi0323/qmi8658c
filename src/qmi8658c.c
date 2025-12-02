@@ -93,7 +93,20 @@ static esp_err_t qmi8658c_read_regs(i2c_port_t i2c_port, uint8_t i2c_addr, uint8
 // ============================================================================
 
 /**
- * @brief Initialize QMI8658C instance
+ * Initialize a QMI8658C device instance and apply the provided configuration.
+ *
+ * Configures internal oscillator and I2C auto-increment, verifies device ID,
+ * programs operating mode, output data rates, full-scale ranges, and enables
+ * accelerometer/gyroscope according to the configuration. Marks the instance
+ * initialized and waits for the sensor to stabilize before returning.
+ *
+ * @param self Pointer to the QMI8658C instance to initialize.
+ * @param config Pointer to the configuration to apply.
+ * @returns
+ * - `ESP_OK` on successful initialization.
+ * - `ESP_ERR_INVALID_ARG` if `self` or `config` is NULL.
+ * - `ESP_ERR_NOT_FOUND` if the device reports an unexpected chip ID.
+ * - Other `esp_err_t` codes returned from underlying I2C register operations on failure.
  */
 static esp_err_t qmi8658c_obj_init(qmi8658c_t* self, const qmi8658c_config_t* config)
 {
@@ -303,7 +316,11 @@ static esp_err_t qmi8658c_obj_reset(qmi8658c_t* self)
 }
 
 /**
- * @brief Set operating mode
+ * Set the sensor operating mode (accelerometer only, gyroscope only, or both).
+ *
+ * @param self Pointer to the QMI8658C instance.
+ * @param mode Desired operating mode.
+ * @returns `ESP_OK` on success, `ESP_ERR_INVALID_ARG` if `self` is NULL, or another `esp_err_t` propagated from underlying I2C register read/write operations on failure.
  */
 static esp_err_t qmi8658c_obj_set_mode(qmi8658c_t* self, qmi8658c_mode_t mode)
 {
@@ -348,7 +365,15 @@ static esp_err_t qmi8658c_obj_set_mode(qmi8658c_t* self, qmi8658c_mode_t mode)
 }
 
 /**
- * @brief Set accelerometer range
+ * Update the object's accelerometer full-scale range and apply the corresponding sensitivity.
+ *
+ * Updates self->config.acc_range and self->acc_sensitivity, writes the new range into the sensor's
+ * CTRL2 register, and allows a short stabilization delay after a successful change.
+ *
+ * @param self Pointer to an initialized qmi8658c object.
+ * @param range Accelerometer full-scale range to set.
+ * @returns ESP_OK on success; ESP_ERR_INVALID_STATE if `self` is NULL or not initialized; otherwise
+ *          an error code returned by the underlying I2C register read/write operations.
  */
 static esp_err_t qmi8658c_obj_set_acc_range(qmi8658c_t* self, qmi8658c_acc_range_t range)
 {
@@ -378,7 +403,14 @@ static esp_err_t qmi8658c_obj_set_acc_range(qmi8658c_t* self, qmi8658c_acc_range
 }
 
 /**
- * @brief Set gyroscope range
+ * Configure the gyroscope full-scale measurement range for the given device instance.
+ *
+ * This updates the instance configuration and sensitivity lookup, writes the new range to the device CTRL3 register,
+ * and performs a short stabilization delay after a successful update.
+ *
+ * @param self Pointer to the initialized device instance.
+ * @param range Gyroscope full-scale range to set (qmi8658c_gyro_range_t).
+ * @returns ESP_OK on success, or an ESP error code on failure (e.g., ESP_ERR_INVALID_STATE for an uninitialized instance or an I2C communication error).
  */
 static esp_err_t qmi8658c_obj_set_gyro_range(qmi8658c_t* self, qmi8658c_gyro_range_t range)
 {
@@ -570,7 +602,11 @@ static esp_err_t qmi8658c_obj_read_temperature(qmi8658c_t* self, float* temperat
 }
 
 /**
- * @brief Read raw accelerometer data
+ * Read raw accelerometer X/Y/Z register values and store them as signed 16-bit counts.
+ *
+ * @param self Pointer to the qmi8658c instance (must be initialized).
+ * @param data Pointer to a qmi8658c_raw_data_t that will be populated with `x`, `y`, and `z` raw counts.
+ * @returns ESP_OK on success; ESP_ERR_INVALID_ARG if `self` or `data` is NULL or the instance is not initialized; otherwise the error code returned by the underlying I2C register read. 
  */
 static esp_err_t qmi8658c_obj_read_acc_raw(qmi8658c_t* self, qmi8658c_raw_data_t* data)
 {
@@ -607,7 +643,14 @@ static esp_err_t qmi8658c_obj_read_acc_raw(qmi8658c_t* self, qmi8658c_raw_data_t
 }
 
 /**
- * @brief Read raw gyroscope data
+ * Obtain raw gyroscope measurements from the sensor into the provided output struct.
+ *
+ * @param self Pointer to the QMI8658C instance to read from.
+ * @param data Pointer to a qmi8658c_raw_data_t structure that will be populated
+ *             with raw 16-bit signed X, Y, Z gyroscope readings (sensor counts).
+ * @returns ESP_OK on success, ESP_ERR_INVALID_ARG if arguments are invalid or the
+ *          instance is not initialized, or another esp_err_t error code from
+ *          the underlying I2C transactions on failure.
  */
 static esp_err_t qmi8658c_obj_read_gyro_raw(qmi8658c_t* self, qmi8658c_raw_data_t* data)
 {
@@ -666,7 +709,11 @@ static esp_err_t qmi8658c_obj_read_acc_scaled(qmi8658c_t* self, qmi8658c_scaled_
 }
 
 /**
- * @brief Read scaled gyroscope data
+ * Read the gyroscope measurements, scale them by the configured sensitivity, and apply the stored gyro offset.
+ *
+ * @param self Pointer to the qmi8658c instance.
+ * @param data Pointer to output structure that will receive scaled gyroscope values (angular rate in degrees per second).
+ * @returns ESP_OK on success and `data` populated; ESP_ERR_INVALID_ARG if `self` or `data` is NULL or the instance is not initialized; otherwise an I2C-related error code from the underlying read. 
  */
 static esp_err_t qmi8658c_obj_read_gyro_scaled(qmi8658c_t* self, qmi8658c_scaled_data_t* data)
 {
@@ -716,7 +763,18 @@ static esp_err_t qmi8658c_obj_read_all_raw(qmi8658c_t* self, qmi8658c_raw_data_t
 }
 
 /**
- * @brief Read all scaled data (accelerometer and gyroscope)
+ * Read and scale both accelerometer and gyroscope measurements into engineering units.
+ *
+ * Scales raw accelerometer samples by the instance's accelerometer sensitivity and
+ * scales raw gyroscope samples by the instance's gyroscope sensitivity while
+ * applying the instance's gyroscope offset.
+ *
+ * @param self Pointer to the QMI8658C instance.
+ * @param[out] acc_data Destination for scaled accelerometer data (g units).
+ * @param[out] gyro_data Destination for scaled gyroscope data (degrees per second, with offset applied).
+ *
+ * @returns `ESP_OK` on success, `ESP_ERR_INVALID_ARG` if any argument is NULL or the instance is not initialized,
+ *          or another `esp_err_t` propagated from the underlying raw-read operation.
  */
 static esp_err_t qmi8658c_obj_read_all_scaled(qmi8658c_t* self, qmi8658c_scaled_data_t* acc_data, qmi8658c_scaled_data_t* gyro_data)
 {
@@ -743,7 +801,16 @@ static esp_err_t qmi8658c_obj_read_all_scaled(qmi8658c_t* self, qmi8658c_scaled_
 }
 
 /**
- * @brief Calibrate gyroscope
+ * Compute and store the gyroscope zero-rate offsets for the device instance.
+ *
+ * Reads `samples` scaled gyroscope measurements, averages them, and stores the
+ * resulting offsets in `self->gyro_offset` for subsequent compensated readings.
+ *
+ * @param self Instance whose gyroscope will be calibrated.
+ * @param samples Number of measurements to average; must be greater than zero.
+ * @returns ESP_OK on success.
+ * @returns ESP_ERR_INVALID_ARG if `self` is NULL, `self` is not initialized, or `samples` is zero.
+ * @returns Other ESP error codes propagated from sensor read operations (e.g., failures from qmi8658c_obj_read_gyro_scaled).
  */
 static esp_err_t qmi8658c_obj_calibrate_gyro(qmi8658c_t* self, uint16_t samples)
 {
@@ -811,7 +878,12 @@ static esp_err_t qmi8658c_obj_self_test(qmi8658c_t* self, bool* acc_test_pass, b
 // ============================================================================
 
 /**
- * @brief Initialize a QMI8658C instance
+ * Initialize a QMI8658C instance structure with default values and method bindings.
+ *
+ * Sets the instance's config to zeros, assigns default accelerometer and gyroscope
+ * sensitivities, clears the initialized flag and gyro offset members, and binds
+ * all public method pointers to their object-oriented implementations.
+ * @param qmi8658c_instance Pointer to an allocated qmi8658c_t instance to initialize.
  */
 void qmi8658c_create(qmi8658c_t* qmi8658c_instance)
 {
@@ -870,7 +942,22 @@ esp_err_t qmi8658c_init_default(i2c_port_t i2c_port)
 
 // ============================================================================
 // Standalone functions (for backward compatibility)
-// ============================================================================
+/**
+ * Initialize the standalone QMI8658C driver using the provided configuration.
+ *
+ * Copies `config` into the driver's global configuration, sets accelerometer and
+ * gyroscope sensitivities, resets and verifies the device, enables the internal
+ * oscillator and address auto-increment, marks the driver as initialized, and
+ * configures operating mode, data rates, and full-scale ranges. Waits for
+ * sensor startup before returning.
+ *
+ * @param config Pointer to the configuration to apply; must not be NULL.
+ * @returns
+ * - `ESP_OK` on successful initialization.
+ * - `ESP_ERR_INVALID_ARG` if `config` is NULL.
+ * - `ESP_ERR_NOT_FOUND` if the connected device reports an unexpected chip ID.
+ * - Other `esp_err_t` values propagated from I2C/register read/write operations on failure.
+ */
 
 esp_err_t qmi8658c_init_with_config(const qmi8658c_config_t* config)
 {
@@ -1010,6 +1097,14 @@ esp_err_t qmi8658c_read_revision(uint8_t* revision)
     return qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_REVISION, revision);
 }
 
+/**
+ * Set the sensor operating mode for the standalone API.
+ *
+ * Configures CTRL7 to enable accelerometer, gyroscope, or both and updates the stored standalone mode. A short stabilization delay is applied after the change.
+ *
+ * @param mode Operating mode to apply: QMI8658C_MODE_ACC_ONLY, QMI8658C_MODE_GYRO_ONLY, or QMI8658C_MODE_DUAL.
+ * @returns ESP_OK on success, ESP_ERR_INVALID_STATE if the standalone API is not initialized, or an error code propagated from the underlying I2C read/write operations.
+ */
 esp_err_t qmi8658c_set_mode(qmi8658c_mode_t mode)
 {
     if (!global_initialized) {
@@ -1127,6 +1222,14 @@ esp_err_t qmi8658c_read_temperature(float* temperature)
     return ret;
 }
 
+/**
+ * Read the accelerometer's raw X, Y, and Z register values into the provided output struct.
+ *
+ * Reads each accelerometer register individually and assembles 16-bit signed axis samples.
+ *
+ * @param data Pointer to a qmi8658c_raw_data_t that will receive the raw axis values (signed 16-bit counts); must not be NULL.
+ * @returns `ESP_OK` on success, `ESP_ERR_INVALID_ARG` if `data` is NULL or the driver has not been initialized, or another `esp_err_t` code propagated from the underlying I2C register read operations.
+ */
 esp_err_t qmi8658c_read_acc_raw(qmi8658c_raw_data_t* data)
 {
     if (!data || !global_initialized) {
@@ -1161,6 +1264,18 @@ esp_err_t qmi8658c_read_acc_raw(qmi8658c_raw_data_t* data)
     return ESP_OK;
 }
 
+/**
+ * Read raw gyroscope measurements into the provided output structure.
+ *
+ * The function fills `data->x`, `data->y`, and `data->z` with signed 16-bit
+ * raw gyro readings from the sensor (LSB and MSB combined).
+ *
+ * @param data Pointer to a qmi8658c_raw_data_t struct that will receive the raw gyro values; must not be NULL.
+ * @returns
+ * - `ESP_OK` on success.
+ * - `ESP_ERR_INVALID_ARG` if `data` is NULL or the driver has not been initialized.
+ * - Other `esp_err_t` codes propagated from lower-level I2C register read operations on failure.
+ */
 esp_err_t qmi8658c_read_gyro_raw(qmi8658c_raw_data_t* data)
 {
     if (!data || !global_initialized) {
@@ -1195,6 +1310,12 @@ esp_err_t qmi8658c_read_gyro_raw(qmi8658c_raw_data_t* data)
     return ESP_OK;
 }
 
+/**
+ * Read the accelerometer, convert raw counts to scaled units, and store the results in `data`.
+ *
+ * @param data Pointer to a qmi8658c_scaled_data_t structure that will receive scaled accelerometer values (units: g for x, y, z).
+ * @returns `ESP_OK` if the sensor was read successfully and `data` was populated; `ESP_ERR_INVALID_ARG` if `data` is NULL or the driver is not initialized; otherwise an ESP error code returned by the underlying I2C/read operation.
+ */
 esp_err_t qmi8658c_read_acc_scaled(qmi8658c_scaled_data_t* data)
 {
     if (!data || !global_initialized) {
@@ -1213,6 +1334,12 @@ esp_err_t qmi8658c_read_acc_scaled(qmi8658c_scaled_data_t* data)
     return ret;
 }
 
+/**
+ * Convert raw gyroscope readings to scaled degrees-per-second and apply the global gyro offset.
+ *
+ * @param data Pointer to an output structure that will be populated with the scaled gyroscope values (degrees per second) on success.
+ * @returns ESP_OK if the read and scaling succeeded and `data` was populated; ESP_ERR_INVALID_ARG if `data` is NULL or the driver is not initialized; otherwise the error code returned by the underlying read operation.
+ */
 esp_err_t qmi8658c_read_gyro_scaled(qmi8658c_scaled_data_t* data)
 {
     if (!data || !global_initialized) {
@@ -1231,6 +1358,17 @@ esp_err_t qmi8658c_read_gyro_scaled(qmi8658c_scaled_data_t* data)
     return ret;
 }
 
+/**
+ * Set the accelerometer full-scale range for the standalone/global API.
+ *
+ * Updates the stored standalone configuration and sensitivity, writes the new
+ * range to the device CTRL2 register, and allows the sensor to stabilize.
+ *
+ * @returns
+ * - `ESP_OK` on success.
+ * - `ESP_ERR_INVALID_STATE` if the standalone driver has not been initialized.
+ * - Other `esp_err_t` codes propagated from the underlying I2C register read/write operations on failure.
+ */
 esp_err_t qmi8658c_set_acc_range(qmi8658c_acc_range_t range)
 {
     if (!global_initialized) {
@@ -1258,6 +1396,14 @@ esp_err_t qmi8658c_set_acc_range(qmi8658c_acc_range_t range)
     return ret;
 }
 
+/**
+ * Set the gyroscope full-scale range for the standalone/global driver and apply it to the device.
+ *
+ * Updates the stored standalone configuration and sensitivity lookup, writes the new range to the sensor's CTRL3 register, and waits briefly for stabilization.
+ *
+ * @param range Gyroscope full-scale range value to configure (qmi8658c_gyro_range_t).
+ * @returns ESP_OK on success; ESP_ERR_INVALID_STATE if the standalone driver is not initialized; otherwise an Espressif error code returned from the underlying I2C register access.
+ */
 esp_err_t qmi8658c_set_gyro_range(qmi8658c_gyro_range_t range)
 {
     if (!global_initialized) {
@@ -1285,6 +1431,18 @@ esp_err_t qmi8658c_set_gyro_range(qmi8658c_gyro_range_t range)
     return ret;
 }
 
+/**
+ * Compute and store gyroscope zero-rate offsets by averaging multiple samples.
+ *
+ * Reads `samples` raw gyroscope measurements, converts each to scaled units using
+ * the current gyroscope sensitivity, averages the values, and stores the result
+ * in `global_gyro_offset`.
+ *
+ * @param samples Number of samples to collect and average; must be greater than zero.
+ * @returns ESP_OK on success.
+ *          ESP_ERR_INVALID_ARG if the driver is not initialized or `samples` is zero.
+ *          Otherwise returns the error code propagated from the underlying read operation.
+ */
 esp_err_t qmi8658c_calibrate_gyro(uint16_t samples)
 {
     if (!global_initialized || samples == 0) {
