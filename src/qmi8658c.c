@@ -12,7 +12,7 @@ static qmi8658c_config_t global_config;
 static uint16_t global_acc_sensitivity = QMI8658C_ACC_SCALE_SENSITIVITY_2G;
 static uint16_t global_gyro_sensitivity = QMI8658C_GYRO_SCALE_SENSITIVITY_16DPS;
 static bool global_initialized = false;
-static qmi8658c_scaled_data_t gyro_offset = {0.0f, 0.0f, 0.0f};
+static qmi8658c_scaled_data_t global_gyro_offset = {0.0f, 0.0f, 0.0f};  // For standalone functions only
 
 static esp_err_t qmi8658c_obj_set_mode(qmi8658c_t* self, qmi8658c_mode_t mode);
 static esp_err_t qmi8658c_obj_set_acc_odr(qmi8658c_t* self, qmi8658c_acc_odr_t odr);
@@ -129,7 +129,41 @@ static esp_err_t qmi8658c_obj_init(qmi8658c_t* self, const qmi8658c_config_t* co
         ESP_LOGE(TAG, "Invalid chip ID: 0x%02X, expected 0x%02X", who_am_i, QMI8658C_CHIP_ID);
         return ESP_ERR_NOT_FOUND;
     }
-     // Set initialized flag before calling other functions that check it
+    
+    // Enable internal oscillator (clear CTRL1 bit 0)
+    uint8_t ctrl1_reg;
+    ret = qmi8658c_read_reg(config->i2c_port, config->i2c_address, QMI8658C_REG_CTRL1, &ctrl1_reg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read CTRL1 register");
+        return ret;
+    }
+    
+    ctrl1_reg &= ~(1 << 0);  // Clear bit 0 to enable oscillator
+    ret = qmi8658c_write_reg(config->i2c_port, config->i2c_address, QMI8658C_REG_CTRL1, ctrl1_reg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable oscillator");
+        return ret;
+    }
+    ESP_LOGI(TAG, "Internal oscillator enabled");
+    
+    // Enable address auto-increment for burst reads
+    // According to QMI8658C datasheet, CTRL9 enables various features
+    // Trying 0x10 (bit 4) for address auto-increment
+    uint8_t ctrl9_reg = 0x10;  // Address auto-increment enable
+    ret = qmi8658c_write_reg(config->i2c_port, config->i2c_address, QMI8658C_REG_CTRL9, ctrl9_reg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure CTRL9");
+        return ret;
+    }
+    
+    // Verify CTRL9 was set correctly
+    uint8_t ctrl9_verify;
+    ret = qmi8658c_read_reg(config->i2c_port, config->i2c_address, QMI8658C_REG_CTRL9, &ctrl9_verify);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "CTRL9 set to 0x%02X (verified: 0x%02X)", ctrl9_reg, ctrl9_verify);
+    }
+    
+    // Set initialized flag BEFORE calling other functions that check it
     self->initialized = true;
     
     // Set operating mode
@@ -165,6 +199,37 @@ static esp_err_t qmi8658c_obj_init(qmi8658c_t* self, const qmi8658c_config_t* co
         return ret;
     }
     
+    // Enable sensors based on mode
+    if (config->mode == QMI8658C_MODE_ACC_ONLY || config->mode == QMI8658C_MODE_DUAL) {
+        ret = qmi8658c_obj_enable_acc(self, true);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to enable accelerometer");
+            return ret;
+        }
+    }
+    
+    if (config->mode == QMI8658C_MODE_GYRO_ONLY || config->mode == QMI8658C_MODE_DUAL) {
+        ret = qmi8658c_obj_enable_gyro(self, true);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to enable gyroscope");
+            return ret;
+        }
+    }
+    
+    // Debug: Read back CTRL7 to verify sensor enable state
+    uint8_t ctrl7_verify;
+    ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_CTRL7, &ctrl7_verify);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "CTRL7 register after init: 0x%02X (ACC:%s GYRO:%s)", 
+                 ctrl7_verify,
+                 (ctrl7_verify & 0x01) ? "ON" : "OFF",
+                 (ctrl7_verify & 0x02) ? "ON" : "OFF");
+    }
+    
+    // Wait for sensor to start data acquisition
+    // QMI8658C needs time to stabilize and begin outputting data
+    ESP_LOGI(TAG, "Waiting for sensor to start data acquisition...");
+    vTaskDelay(pdMS_TO_TICKS(50));  // 50ms startup delay
    
     ESP_LOGI(TAG, "QMI8658C initialized successfully");
     
@@ -253,7 +318,22 @@ static esp_err_t qmi8658c_obj_set_mode(qmi8658c_t* self, qmi8658c_mode_t mode)
         return ret;
     }
     
-    ctrl7_reg = (ctrl7_reg & 0xFC) | mode;
+    // Clear mode bits and enable bits, then set new mode
+    ctrl7_reg = (ctrl7_reg & 0xF0);  // Clear lower 4 bits
+    
+    // Set mode bits [1:0] and enable bits [3:2] based on mode
+    switch(mode) {
+        case QMI8658C_MODE_ACC_ONLY:
+            ctrl7_reg |= 0x01;  // Enable accelerometer
+            break;
+        case QMI8658C_MODE_GYRO_ONLY:
+            ctrl7_reg |= 0x02;  // Enable gyroscope
+            break;
+        case QMI8658C_MODE_DUAL:
+            ctrl7_reg |= 0x03;  // Enable both
+            break;
+    }
+    
     ret = qmi8658c_write_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_CTRL7, ctrl7_reg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set mode");
@@ -261,6 +341,7 @@ static esp_err_t qmi8658c_obj_set_mode(qmi8658c_t* self, qmi8658c_mode_t mode)
     }
     
     self->config.mode = mode;
+    vTaskDelay(pdMS_TO_TICKS(10));  // Stabilization delay
     ESP_LOGI(TAG, "Operating mode set to %d", mode);
     
     return ESP_OK;
@@ -289,6 +370,7 @@ static esp_err_t qmi8658c_obj_set_acc_range(qmi8658c_t* self, qmi8658c_acc_range
     ret = qmi8658c_write_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_CTRL2, ctrl2_reg);
     
     if (ret == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(10));  // Stabilization delay after range change
         ESP_LOGI(TAG, "Accelerometer range set to %d", range);
     }
     
@@ -318,6 +400,7 @@ static esp_err_t qmi8658c_obj_set_gyro_range(qmi8658c_t* self, qmi8658c_gyro_ran
     ret = qmi8658c_write_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_CTRL3, ctrl3_reg);
     
     if (ret == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(10));  // Stabilization delay after range change
         ESP_LOGI(TAG, "Gyroscope range set to %d", range);
     }
     
@@ -495,16 +578,32 @@ static esp_err_t qmi8658c_obj_read_acc_raw(qmi8658c_t* self, qmi8658c_raw_data_t
         return ESP_ERR_INVALID_ARG;
     }
     
-    uint8_t acc_data[6];
-    esp_err_t ret = qmi8658c_read_regs(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_AX_L, acc_data, 6);
+    // QMI8658C doesn't support I2C burst reads properly - must read each register individually
+    uint8_t ax_l, ax_h, ay_l, ay_h, az_l, az_h;
     
-    if (ret == ESP_OK) {
-        data->x = (int16_t)(acc_data[1] << 8 | acc_data[0]);
-        data->y = (int16_t)(acc_data[3] << 8 | acc_data[2]);
-        data->z = (int16_t)(acc_data[5] << 8 | acc_data[4]);
-    }
+    esp_err_t ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_AX_L, &ax_l);
+    if (ret != ESP_OK) return ret;
     
-    return ret;
+    ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_AX_H, &ax_h);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_AY_L, &ay_l);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_AY_H, &ay_h);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_AZ_L, &az_l);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_AZ_H, &az_h);
+    if (ret != ESP_OK) return ret;
+    
+    data->x = (int16_t)(ax_h << 8 | ax_l);
+    data->y = (int16_t)(ay_h << 8 | ay_l);
+    data->z = (int16_t)(az_h << 8 | az_l);
+    
+    return ESP_OK;
 }
 
 /**
@@ -516,16 +615,32 @@ static esp_err_t qmi8658c_obj_read_gyro_raw(qmi8658c_t* self, qmi8658c_raw_data_
         return ESP_ERR_INVALID_ARG;
     }
     
-    uint8_t gyro_data[6];
-    esp_err_t ret = qmi8658c_read_regs(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_GX_L, gyro_data, 6);
+    // QMI8658C doesn't support I2C burst reads properly - must read each register individually
+    uint8_t gx_l, gx_h, gy_l, gy_h, gz_l, gz_h;
     
-    if (ret == ESP_OK) {
-        data->x = (int16_t)(gyro_data[1] << 8 | gyro_data[0]);
-        data->y = (int16_t)(gyro_data[3] << 8 | gyro_data[2]);
-        data->z = (int16_t)(gyro_data[5] << 8 | gyro_data[4]);
-    }
+    esp_err_t ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_GX_L, &gx_l);
+    if (ret != ESP_OK) return ret;
     
-    return ret;
+    ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_GX_H, &gx_h);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_GY_L, &gy_l);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_GY_H, &gy_h);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_GZ_L, &gz_l);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(self->config.i2c_port, self->config.i2c_address, QMI8658C_REG_GZ_H, &gz_h);
+    if (ret != ESP_OK) return ret;
+    
+    data->x = (int16_t)(gx_h << 8 | gx_l);
+    data->y = (int16_t)(gy_h << 8 | gy_l);
+    data->z = (int16_t)(gz_h << 8 | gz_l);
+    
+    return ESP_OK;
 }
 
 /**
@@ -563,10 +678,10 @@ static esp_err_t qmi8658c_obj_read_gyro_scaled(qmi8658c_t* self, qmi8658c_scaled
     esp_err_t ret = qmi8658c_obj_read_gyro_raw(self, &raw_data);
     
     if (ret == ESP_OK) {
-        // Use Arduino library formula: raw_value / sensitivity
-        data->x = (float)raw_data.x / self->gyro_sensitivity;
-        data->y = (float)raw_data.y / self->gyro_sensitivity;
-        data->z = (float)raw_data.z / self->gyro_sensitivity;
+        // Use Arduino library formula: raw_value / sensitivity - offset
+        data->x = ((float)raw_data.x / self->gyro_sensitivity) - self->gyro_offset.x;
+        data->y = ((float)raw_data.y / self->gyro_sensitivity) - self->gyro_offset.y;
+        data->z = ((float)raw_data.z / self->gyro_sensitivity) - self->gyro_offset.z;
     }
     
     return ret;
@@ -618,10 +733,10 @@ static esp_err_t qmi8658c_obj_read_all_scaled(qmi8658c_t* self, qmi8658c_scaled_
         acc_data->y = (float)raw_acc.y / self->acc_sensitivity;
         acc_data->z = (float)raw_acc.z / self->acc_sensitivity;
         
-        // Scale gyroscope data using Arduino library formula
-        gyro_data->x = (float)raw_gyro.x / self->gyro_sensitivity;
-        gyro_data->y = (float)raw_gyro.y / self->gyro_sensitivity;
-        gyro_data->z = (float)raw_gyro.z / self->gyro_sensitivity;
+        // Scale gyroscope data using Arduino library formula and apply offset
+        gyro_data->x = ((float)raw_gyro.x / self->gyro_sensitivity) - self->gyro_offset.x;
+        gyro_data->y = ((float)raw_gyro.y / self->gyro_sensitivity) - self->gyro_offset.y;
+        gyro_data->z = ((float)raw_gyro.z / self->gyro_sensitivity) - self->gyro_offset.z;
     }
     
     return ret;
@@ -656,12 +771,12 @@ static esp_err_t qmi8658c_obj_calibrate_gyro(qmi8658c_t* self, uint16_t samples)
     }
     
     // Calculate averages (these are the offsets)
-    gyro_offset.x = sum.x / samples;
-    gyro_offset.y = sum.y / samples;
-    gyro_offset.z = sum.z / samples;
+    self->gyro_offset.x = sum.x / samples;
+    self->gyro_offset.y = sum.y / samples;
+    self->gyro_offset.z = sum.z / samples;
     
     ESP_LOGI(TAG, "Gyroscope calibration completed. Offsets: X=%.3f, Y=%.3f, Z=%.3f", 
-             gyro_offset.x, gyro_offset.y, gyro_offset.z);
+             self->gyro_offset.x, self->gyro_offset.y, self->gyro_offset.z);
     
     return ESP_OK;
 }
@@ -705,6 +820,9 @@ void qmi8658c_create(qmi8658c_t* qmi8658c_instance)
     qmi8658c_instance->acc_sensitivity = QMI8658C_ACC_SCALE_SENSITIVITY_2G;
     qmi8658c_instance->gyro_sensitivity = QMI8658C_GYRO_SCALE_SENSITIVITY_16DPS;
     qmi8658c_instance->initialized = false;
+    qmi8658c_instance->gyro_offset.x = 0.0f;
+    qmi8658c_instance->gyro_offset.y = 0.0f;
+    qmi8658c_instance->gyro_offset.z = 0.0f;
     
     // Initialize function pointers
     qmi8658c_instance->init = qmi8658c_obj_init;
@@ -789,6 +907,40 @@ esp_err_t qmi8658c_init_with_config(const qmi8658c_config_t* config)
         return ESP_ERR_NOT_FOUND;
     }
     
+    // Enable internal oscillator (clear CTRL1 bit 0)
+    uint8_t ctrl1_reg;
+    ret = qmi8658c_read_reg(config->i2c_port, config->i2c_address, QMI8658C_REG_CTRL1, &ctrl1_reg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read CTRL1 register (standalone)");
+        return ret;
+    }
+    
+    ctrl1_reg &= ~(1 << 0);  // Clear bit 0 to enable oscillator
+    ret = qmi8658c_write_reg(config->i2c_port, config->i2c_address, QMI8658C_REG_CTRL1, ctrl1_reg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to enable oscillator (standalone)");
+        return ret;
+    }
+    ESP_LOGI(TAG, "Internal oscillator enabled (standalone)");
+    
+    // Enable address auto-increment for burst reads
+    uint8_t ctrl9_reg = 0x10;  // Address auto-increment enable
+    ret = qmi8658c_write_reg(config->i2c_port, config->i2c_address, QMI8658C_REG_CTRL9, ctrl9_reg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure CTRL9 (standalone)");
+        return ret;
+    }
+    
+    // Verify CTRL9 was set correctly
+    uint8_t ctrl9_verify;
+    ret = qmi8658c_read_reg(config->i2c_port, config->i2c_address, QMI8658C_REG_CTRL9, &ctrl9_verify);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "CTRL9 set to 0x%02X (verified: 0x%02X) (standalone)", ctrl9_reg, ctrl9_verify);
+    }
+    
+    // Set initialized flag BEFORE calling configuration functions
+    global_initialized = true;
+    
     // Set operating mode
     ret = qmi8658c_set_mode(config->mode);
     if (ret != ESP_OK) {
@@ -822,7 +974,10 @@ esp_err_t qmi8658c_init_with_config(const qmi8658c_config_t* config)
         return ret;
     }
     
-    global_initialized = true;
+    // Wait for sensor to start data acquisition
+    ESP_LOGI(TAG, "Waiting for sensor to start data acquisition... (standalone)");
+    vTaskDelay(pdMS_TO_TICKS(50));  // 50ms startup delay
+    
     ESP_LOGI(TAG, "QMI8658C initialized successfully (standalone)");
     
     return ESP_OK;
@@ -868,7 +1023,22 @@ esp_err_t qmi8658c_set_mode(qmi8658c_mode_t mode)
         return ret;
     }
     
-    ctrl7_reg = (ctrl7_reg & 0xFC) | mode;
+    // Clear mode bits and enable bits, then set new mode
+    ctrl7_reg = (ctrl7_reg & 0xF0);  // Clear lower 4 bits
+    
+    // Set mode bits and enable bits based on mode
+    switch(mode) {
+        case QMI8658C_MODE_ACC_ONLY:
+            ctrl7_reg |= 0x01;  // Enable accelerometer
+            break;
+        case QMI8658C_MODE_GYRO_ONLY:
+            ctrl7_reg |= 0x02;  // Enable gyroscope
+            break;
+        case QMI8658C_MODE_DUAL:
+            ctrl7_reg |= 0x03;  // Enable both
+            break;
+    }
+    
     ret = qmi8658c_write_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_CTRL7, ctrl7_reg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set mode");
@@ -876,6 +1046,7 @@ esp_err_t qmi8658c_set_mode(qmi8658c_mode_t mode)
     }
     
     global_config.mode = mode;
+    vTaskDelay(pdMS_TO_TICKS(10));  // Stabilization delay
     ESP_LOGI(TAG, "Operating mode set to %d (standalone)", mode);
     
     return ESP_OK;
@@ -962,16 +1133,32 @@ esp_err_t qmi8658c_read_acc_raw(qmi8658c_raw_data_t* data)
         return ESP_ERR_INVALID_ARG;
     }
     
-    uint8_t acc_data[6];
-    esp_err_t ret = qmi8658c_read_regs(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_AX_L, acc_data, 6);
+    // QMI8658C doesn't support I2C burst reads properly - must read each register individually
+    uint8_t ax_l, ax_h, ay_l, ay_h, az_l, az_h;
     
-    if (ret == ESP_OK) {
-        data->x = (int16_t)(acc_data[1] << 8 | acc_data[0]);
-        data->y = (int16_t)(acc_data[3] << 8 | acc_data[2]);
-        data->z = (int16_t)(acc_data[5] << 8 | acc_data[4]);
-    }
+    esp_err_t ret = qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_AX_L, &ax_l);
+    if (ret != ESP_OK) return ret;
     
-    return ret;
+    ret = qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_AX_H, &ax_h);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_AY_L, &ay_l);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_AY_H, &ay_h);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_AZ_L, &az_l);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_AZ_H, &az_h);
+    if (ret != ESP_OK) return ret;
+    
+    data->x = (int16_t)(ax_h << 8 | ax_l);
+    data->y = (int16_t)(ay_h << 8 | ay_l);
+    data->z = (int16_t)(az_h << 8 | az_l);
+    
+    return ESP_OK;
 }
 
 esp_err_t qmi8658c_read_gyro_raw(qmi8658c_raw_data_t* data)
@@ -980,16 +1167,32 @@ esp_err_t qmi8658c_read_gyro_raw(qmi8658c_raw_data_t* data)
         return ESP_ERR_INVALID_ARG;
     }
     
-    uint8_t gyro_data[6];
-    esp_err_t ret = qmi8658c_read_regs(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_GX_L, gyro_data, 6);
+    // QMI8658C doesn't support I2C burst reads properly - must read each register individually
+    uint8_t gx_l, gx_h, gy_l, gy_h, gz_l, gz_h;
     
-    if (ret == ESP_OK) {
-        data->x = (int16_t)(gyro_data[1] << 8 | gyro_data[0]);
-        data->y = (int16_t)(gyro_data[3] << 8 | gyro_data[2]);
-        data->z = (int16_t)(gyro_data[5] << 8 | gyro_data[4]);
-    }
+    esp_err_t ret = qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_GX_L, &gx_l);
+    if (ret != ESP_OK) return ret;
     
-    return ret;
+    ret = qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_GX_H, &gx_h);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_GY_L, &gy_l);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_GY_H, &gy_h);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_GZ_L, &gz_l);
+    if (ret != ESP_OK) return ret;
+    
+    ret = qmi8658c_read_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_GZ_H, &gz_h);
+    if (ret != ESP_OK) return ret;
+    
+    data->x = (int16_t)(gx_h << 8 | gx_l);
+    data->y = (int16_t)(gy_h << 8 | gy_l);
+    data->z = (int16_t)(gz_h << 8 | gz_l);
+    
+    return ESP_OK;
 }
 
 esp_err_t qmi8658c_read_acc_scaled(qmi8658c_scaled_data_t* data)
@@ -1020,9 +1223,9 @@ esp_err_t qmi8658c_read_gyro_scaled(qmi8658c_scaled_data_t* data)
     esp_err_t ret = qmi8658c_read_gyro_raw(&raw_data);
     
     if (ret == ESP_OK) {
-        data->x = (float)raw_data.x / global_gyro_sensitivity - gyro_offset.x;
-        data->y = (float)raw_data.y / global_gyro_sensitivity - gyro_offset.y;
-        data->z = (float)raw_data.z / global_gyro_sensitivity - gyro_offset.z;
+        data->x = (float)raw_data.x / global_gyro_sensitivity - global_gyro_offset.x;
+        data->y = (float)raw_data.y / global_gyro_sensitivity - global_gyro_offset.y;
+        data->z = (float)raw_data.z / global_gyro_sensitivity - global_gyro_offset.z;
     }
     
     return ret;
@@ -1048,6 +1251,7 @@ esp_err_t qmi8658c_set_acc_range(qmi8658c_acc_range_t range)
     ret = qmi8658c_write_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_CTRL2, ctrl2_reg);
     
     if (ret == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(10));  // Stabilization delay after range change
         ESP_LOGI(TAG, "Accelerometer range set to %d (standalone)", range);
     }
     
@@ -1074,6 +1278,7 @@ esp_err_t qmi8658c_set_gyro_range(qmi8658c_gyro_range_t range)
     ret = qmi8658c_write_reg(global_config.i2c_port, global_config.i2c_address, QMI8658C_REG_CTRL3, ctrl3_reg);
     
     if (ret == ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(10));  // Stabilization delay after range change
         ESP_LOGI(TAG, "Gyroscope range set to %d (standalone)", range);
     }
     
@@ -1107,12 +1312,12 @@ esp_err_t qmi8658c_calibrate_gyro(uint16_t samples)
     }
     
     // Calculate new offsets
-    gyro_offset.x = sum.x / samples;
-    gyro_offset.y = sum.y / samples;
-    gyro_offset.z = sum.z / samples;
+    global_gyro_offset.x = sum.x / samples;
+    global_gyro_offset.y = sum.y / samples;
+    global_gyro_offset.z = sum.z / samples;
     
     ESP_LOGI(TAG, "Gyroscope calibration completed (standalone). Offsets: X=%.3f, Y=%.3f, Z=%.3f", 
-             gyro_offset.x, gyro_offset.y, gyro_offset.z);
+             global_gyro_offset.x, global_gyro_offset.y, global_gyro_offset.z);
     
     return ESP_OK;
 }

@@ -181,6 +181,7 @@ struct qmi8658c {
     uint16_t acc_sensitivity;
     uint16_t gyro_sensitivity;
     bool initialized;
+    qmi8658c_scaled_data_t gyro_offset;  // Per-instance gyro calibration offset
     
     // Function pointers (methods)
     esp_err_t (*init)(qmi8658c_t* self, const qmi8658c_config_t* config);
